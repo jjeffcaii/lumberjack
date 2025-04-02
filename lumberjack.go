@@ -3,7 +3,7 @@
 // Note that this is v2.0 of lumberjack, and should be imported using gopkg.in
 // thusly:
 //
-//   import "gopkg.in/natefinch/lumberjack.v2"
+//	import "gopkg.in/natefinch/lumberjack.v2"
 //
 // The package name remains simply lumberjack, and the code resides at
 // https://github.com/natefinch/lumberjack under the v2.0 branch.
@@ -66,7 +66,7 @@ var _ io.WriteCloser = (*Logger)(nil)
 // `/var/log/foo/server.log`, a backup created at 6:30pm on Nov 11 2016 would
 // use the filename `/var/log/foo/server-2016-11-04T18-30-00.000.log`
 //
-// Cleaning Up Old Log Files
+// # Cleaning Up Old Log Files
 //
 // Whenever a new logfile gets created, old log files may be deleted.  The most
 // recent files according to the encoded timestamp will be retained, up to a
@@ -106,6 +106,19 @@ type Logger struct {
 	// Compress determines if the rotated log files should be compressed
 	// using gzip. The default is not to perform compression.
 	Compress bool `json:"compress" yaml:"compress"`
+
+	// FileMode is the mode when chown target log file. The default is 0600.
+	FileMode uint32 `json:"filemode" yaml:"filemode"`
+
+	// BackupPattern is the backup filename pattern with following variables:
+	// eg: filename is "/your/folder/service.log"
+	// - {{filename}}: "service.log"
+	// - {{prefix}}: "service"
+	// - {{ext}}: ".log"
+	// - {{timestamp}}: 2006-01-02T15:04:05.000
+	// - {{unixtime}}: use time.Now().Unix()
+	// - {{unixtimestamp}}: use time.Now().UnixMilli()
+	BackupPattern string `json:"backuppattern" yaml:"backuppattern"`
 
 	size int64
 	file *os.File
@@ -180,7 +193,7 @@ func (l *Logger) close() error {
 
 // Rotate causes Logger to close the existing log file and immediately create a
 // new one.  This is a helper function for applications that want to initiate
-// rotations outside of the normal rotation rules, such as in response to
+// rotations outside the normal rotation rules, such as in response to
 // SIGHUP.  After rotating, this initiates compression and removal of old log
 // files according to the configuration.
 func (l *Logger) Rotate() error {
@@ -204,7 +217,7 @@ func (l *Logger) rotate() error {
 }
 
 // openNew opens a new log file for writing, moving any old log file out of the
-// way.  This methods assumes the file has already been closed.
+// way. This method assumes the file has already been closed.
 func (l *Logger) openNew() error {
 	err := os.MkdirAll(l.dir(), 0755)
 	if err != nil {
@@ -213,12 +226,15 @@ func (l *Logger) openNew() error {
 
 	name := l.filename()
 	mode := os.FileMode(0600)
+	if l.FileMode != 0 {
+		mode = os.FileMode(l.FileMode)
+	}
 	info, err := osStat(name)
 	if err == nil {
 		// Copy the mode off the old logfile.
 		mode = info.Mode()
 		// move the existing file
-		newname := backupName(name, l.LocalTime)
+		newname := backupName(name, l.LocalTime, l.BackupPattern)
 		if err := os.Rename(name, newname); err != nil {
 			return fmt.Errorf("can't rename log file: %s", err)
 		}
@@ -244,7 +260,7 @@ func (l *Logger) openNew() error {
 // backupName creates a new filename from the given name, inserting a timestamp
 // between the filename and the extension, using the local time if requested
 // (otherwise UTC).
-func backupName(name string, local bool) string {
+func backupName(name string, local bool, namePattern string) string {
 	dir := filepath.Dir(name)
 	filename := filepath.Base(name)
 	ext := filepath.Ext(filename)
@@ -253,9 +269,19 @@ func backupName(name string, local bool) string {
 	if !local {
 		t = t.UTC()
 	}
-
 	timestamp := t.Format(backupTimeFormat)
-	return filepath.Join(dir, fmt.Sprintf("%s-%s%s", prefix, timestamp, ext))
+
+	if namePattern == "" {
+		return filepath.Join(dir, fmt.Sprintf("%s-%s%s", prefix, timestamp, ext))
+	}
+
+	replacer := strings.NewReplacer(
+		"{{filename}}", filename,
+		"{{timestamp}}", timestamp,
+		"{{prefix}}", prefix,
+		"{{ext}}", ext,
+	)
+	return filepath.Join(dir, replacer.Replace(namePattern))
 }
 
 // openExistingOrNew opens the logfile if it exists and if the current write
